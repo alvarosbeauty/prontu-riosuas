@@ -1,0 +1,562 @@
+import React, { useEffect, useMemo, useState } from "react";
+
+/**
+ * PRONTUÁRIO SUAS – CRAS ARARA/PB (versão completa)
+ * Autor: Assistente (GPT-5 Thinking) para Walisom Álvaro (CRP 13/12242)
+ *
+ * Funcionalidades:
+ * - Cadastro de família/usuário (prontuário, NIS, renda, composição familiar)
+ * - Linha do tempo, visitas e resumo do caso
+ * - Busca por nome, exclusão, importação/exportação CSV/JSON, impressão (PDF via Ctrl+P)
+ * - Recomendações legais por palavras‑chave (LOAS/BPC, PNAS/PAIF/SCFV, ECA, Estatuto da Pessoa Idosa, LBI, Lei Maria da Penha, Ética/CFP)
+ * - Validador Ético/LGPD de dados sensíveis
+ * - Salvamento local (localStorage)
+ * - Cabeçalho com degradê nas cores enviadas
+ * - **Logo em Base64**: upload pelo botão "Configurações"; persistida em localStorage
+ * - Referências normativas fixas na lateral direita
+ */
+
+// ======= PALETA =======
+const theme = {
+  bg: "#e3e2de",
+  primary: "#985d3b",
+  soft1: "#f9d0b4",
+  soft2: "#dcb18c",
+  textDark: "#2A1E18",
+  textLight: "#FFFFFF",
+};
+
+// ======= PLACEHOLDER DE LOGO (pequeno PNG transparente) =======
+const PLACEHOLDER_LOGO =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQImWNgYGBgAAAABQABhQJ2YQAAAABJRU5ErkJggg==";
+
+// ======= MODELOS =======
+const emptyFamily = () => ({
+  id: crypto?.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()),
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+  // Identificação
+  nomeReferencia: "",
+  nisReferencia: "",
+  prontuarioN: "",
+  telefone: "",
+  endereco: "",
+  bairro: "",
+  municipio: "Arara/PB",
+  // Composição
+  membros: [], // { id, nome, parentesco, idade, nis, escolaridade, renda }
+  rendaFamiliar: "",
+  // Demandas & Acompanhamento
+  demandas: "",
+  resumoCaso: "",
+  timeline: [], // { id, tipo, dataISO, titulo, descricao }
+  visitas: [],  // { id, dataISO, objetivo, observacoes }
+});
+
+// ======= BASE NORMATIVA (palavras‑chave → recomendações) =======
+const NORMATIVE_KB = [
+  {
+    id: "loas-bpc",
+    title: "LOAS / BPC (Lei 8.742/1993)",
+    keywords: ["bpc", "benefício de prestação continuada", "deficiência", "idoso", "renda", "1/4 salário", "vulnerabilidade"],
+    summary:
+      "Verificar elegibilidade ao BPC para pessoa idosa (≥65) ou pessoa com deficiência, conforme impedimentos de longo prazo e renda per capita. Orientar sobre avaliação social/médica, visita domiciliar e atualização no CadÚnico.",
+    sources: [
+      { label: "Lei 8.742/1993 (LOAS)", url: "https://www.planalto.gov.br/ccivil_03/leis/l8742.htm" },
+      { label: "MDS – BPC", url: "https://www.gov.br/mds/pt-br/assuntos/assistencia-social/beneficios-assistenciais/bpc" },
+    ],
+  },
+  {
+    id: "pnas",
+    title: "PNAS / Proteção Social Básica",
+    keywords: ["paif", "psb", "scfv", "vínculos", "acompanhamento familiar", "território", "pnas"],
+    summary:
+      "Avaliar inserção no PAIF e no SCFV, com plano de acompanhamento familiar, metas e periodicidade de atendimentos, registrando no prontuário SUAS.",
+    sources: [
+      { label: "Res. CNAS nº 145/2004 (PNAS)", url: "https://www.mds.gov.br/webarquivos/publicacao/assistencia_social/Normativas/PNAS2004.pdf" },
+      { label: "Res. CNAS nº 109/2009 (Tipificação)", url: "https://www.mds.gov.br/webarquivos/publicacao/assistencia_social/Normativas/Tipificacao.pdf" },
+    ],
+  },
+  {
+    id: "eca",
+    title: "ECA – Estatuto da Criança e do Adolescente",
+    keywords: ["violência", "negligência", "abandono", "trabalho infantil", "direitos", "medidas de proteção", "conselho tutelar"],
+    summary:
+      "Em indícios de violação de direitos, acionar rede (Conselho Tutelar, escola, saúde), elaborar registros e preservar sigilo e o melhor interesse da criança/adolescente.",
+    sources: [ { label: "Lei 8.069/1990", url: "https://www.planalto.gov.br/ccivil_03/leis/l8069.htm" } ],
+  },
+  {
+    id: "idoso",
+    title: "Estatuto da Pessoa Idosa",
+    keywords: ["idoso", "abandono", "violência financeira", "prioridade", "acolhimento", "cuidador"],
+    summary:
+      "Garantir prioridade e avaliar risco de violência/insegurança alimentar; articular com saúde e rede de proteção; registrar encaminhamentos.",
+    sources: [ { label: "Lei 10.741/2003", url: "https://www.planalto.gov.br/ccivil_03/leis/2003/l10.741.htm" } ],
+  },
+  {
+    id: "lbi",
+    title: "LBI – Estatuto da Pessoa com Deficiência",
+    keywords: ["deficiência", "acessibilidade", "barreiras", "inclusão", "benefício", "direitos"],
+    summary:
+      "Mapear barreiras e orientar sobre acessibilidade, benefícios e serviços; articular com saúde/educação para itinerário terapêutico e apoio à família.",
+    sources: [ { label: "Lei 13.146/2015", url: "https://www.planalto.gov.br/ccivil_03/_ato2015-2018/2015/lei/l13146.htm" } ],
+  },
+  {
+    id: "violencia-mulher",
+    title: "Lei Maria da Penha e Rede de Enfrentamento",
+    keywords: ["violência doméstica", "ameaça", "agressão", "medida protetiva", "mulher"],
+    summary:
+      "Orientar sobre medidas protetivas, articular CREAS/DEAM e garantir acolhimento sem revitimização; registro cuidadoso.",
+    sources: [ { label: "Lei 11.340/2006", url: "http://www.planalto.gov.br/ccivil_03/_ato2004-2006/2006/lei/l11340.htm" } ],
+  },
+  {
+    id: "cfp",
+    title: "Ética Profissional – CFP",
+    keywords: ["sigilo", "consentimento", "prontuário", "ética", "laudo", "parecer"],
+    summary:
+      "Resguardar sigilo, coleta mínima necessária, consentimento informado e guarda segura dos registros. Em risco iminente, o sigilo pode ser relativizado conforme a legislação.",
+    sources: [ { label: "Código de Ética – CFP", url: "https://site.cfp.org.br/servicos/legislacao/codigo-de-etica-profissional-do-psicologo/" } ],
+  },
+];
+
+// ======= Padrões de dados sensíveis (LGPD/Ética) =======
+const SENSITIVE_PATTERNS = [
+  { id: "cpf", label: "CPF", regex: /\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b/g },
+  { id: "rg", label: "RG", regex: /\brg\b\s*[:º-]?\s*\d+/gi },
+  { id: "telefone", label: "Telefone", regex: /(\+?55\s?)?\(?\d{2}\)?\s?\d{4,5}-?\d{4}/g },
+  { id: "saude", label: "Dados de saúde", regex: /(diagnóstico|cid-?10|cid-?11|transtorno|hiv|aids|gestante|doença)/gi },
+  { id: "endereco", label: "Endereço completo", regex: /(rua|avenida|travessa|sítio|bairro|lote|quadra)/gi },
+  { id: "bancario", label: "Dados bancários", regex: /(agência|conta|pix|banco|chave pix)/gi },
+];
+
+// ======= HELPERS =======
+const saveDB = (data) => localStorage.setItem("cras_prontuario_db", JSON.stringify(data));
+const loadDB = () => { try { return JSON.parse(localStorage.getItem("cras_prontuario_db") || "{}"); } catch { return {}; } };
+const saveLogo = (b64) => localStorage.setItem("cras_logo_b64", b64);
+const loadLogo = () => localStorage.getItem("cras_logo_b64") || PLACEHOLDER_LOGO;
+
+function toCSV(records) {
+  const rows = [];
+  const header = [
+    "id","nomeReferencia","prontuarioN","nisReferencia","telefone","endereco","bairro","municipio","rendaFamiliar","demandas","resumoCaso","createdAt","updatedAt"
+  ];
+  rows.push(header.join(","));
+  records.forEach((r) => {
+    const vals = header.map((k) => JSON.stringify((r[k] ?? "").toString()).replace(/\n/g, " "));
+    rows.push(vals.join(","));
+  });
+  return rows.join("\n");
+}
+
+function download(filename, text, mime = "text/plain;charset=utf-8") {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click(); URL.revokeObjectURL(url);
+}
+
+function Badge({ children }) {
+  return (
+    <span className="inline-block px-2 py-0.5 text-xs rounded-full bg-white/70 text-[var(--textDark)] border border-black/10 mr-1 mb-1">
+      {children}
+    </span>
+  );
+}
+
+function Section({ title, children, right }) {
+  return (
+    <div className="bg-white rounded-2xl shadow-sm border border-black/5 p-4 md:p-6 mb-6">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-lg md:text-xl font-semibold text-[var(--textDark)]">{title}</h3>
+        {right}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function TextInput({ label, value, onChange, placeholder, type = "text" }) {
+  return (
+    <label className="block mb-3">
+      <span className="block text-sm font-medium text-[var(--textDark)]/80 mb-1">{label}</span>
+      <input
+        type={type}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="w-full rounded-xl border border-black/10 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
+      />
+    </label>
+  );
+}
+
+function TextArea({ label, value, onChange, placeholder, rows = 4 }) {
+  return (
+    <label className="block mb-3">
+      <span className="block text-sm font-medium text-[var(--textDark)]/80 mb-1">{label}</span>
+      <textarea
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        rows={rows}
+        className="w-full rounded-xl border border-black/10 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
+      />
+    </label>
+  );
+}
+
+function PillButton({ children, onClick, title, variant = "solid" }) {
+  const base = "px-3 py-2 rounded-xl text-sm font-medium transition";
+  const styles = variant === "solid"
+    ? "bg-[var(--primary)] text-white hover:brightness-110"
+    : "bg-white/80 text-[var(--textDark)] border border-black/10 hover:bg-white";
+  return (
+    <button title={title} onClick={onClick} className={`${base} ${styles} mr-2 mb-2`}>
+      {children}
+    </button>
+  );
+}
+
+function Modal({ open, onClose, children, title }) {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+      <div className="bg-white rounded-2xl shadow-xl w-[95vw] max-w-xl p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h4 className="text-lg font-semibold">{title}</h4>
+          <button onClick={onClose} className="text-sm">Fechar</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// ======= APP =======
+export default function App() {
+  const [db, setDb] = useState(() => ({ familias: loadDB().familias || [] }));
+  const [query, setQuery] = useState("");
+  const [selectedId, setSelectedId] = useState(null);
+  const [logoData, setLogoData] = useState(loadLogo());
+  const [cfgOpen, setCfgOpen] = useState(false);
+  const selected = useMemo(() => db.familias.find((f) => f.id === selectedId) || null, [db, selectedId]);
+
+  useEffect(() => { saveDB(db); }, [db]);
+  useEffect(() => {
+    document.documentElement.style.setProperty("--bg", theme.bg);
+    document.documentElement.style.setProperty("--primary", theme.primary);
+    document.documentElement.style.setProperty("--textDark", theme.textDark);
+    document.documentElement.style.setProperty("--textLight", theme.textLight);
+  }, []);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return db.familias; return db.familias.filter((f) => (f.nomeReferencia || "").toLowerCase().includes(q));
+  }, [db, query]);
+
+  function newFamily() { const fam = emptyFamily(); setDb((old) => ({ familias: [fam, ...old.familias] })); setSelectedId(fam.id); }
+  function updateFamily(patch) { setDb((old) => ({ familias: old.familias.map((f) => f.id === selectedId ? { ...f, ...patch, updatedAt: new Date().toISOString() } : f) })); }
+  function removeFamily(id) { setDb((old) => ({ familias: old.familias.filter((f) => f.id !== id) })); if (selectedId === id) setSelectedId(null); }
+  function exportCSV() { download(`prontuario_suas_${new Date().toISOString().slice(0,10)}.csv`, toCSV(db.familias), "text/csv;charset=utf-8"); }
+  function exportJSON() { download(`prontuario_suas_${new Date().toISOString().slice(0,10)}.json`, JSON.stringify(db, null, 2), "application/json"); }
+  function importJSON(file) { const reader = new FileReader(); reader.onload = () => { try { const data = JSON.parse(reader.result); const familias = Array.isArray(data?.familias) ? data.familias : (Array.isArray(data) ? data : null); if (!familias) throw new Error(); setDb({ familias }); } catch { alert("Arquivo JSON inválido"); } }; reader.readAsText(file); }
+
+  function handleLogoUpload(file) {
+    const reader = new FileReader();
+    reader.onload = () => { const b64 = String(reader.result); setLogoData(b64); saveLogo(b64); };
+    reader.readAsDataURL(file); // → Base64
+  }
+
+  function resetLogo() { setLogoData(PLACEHOLDER_LOGO); saveLogo(PLACEHOLDER_LOGO); }
+
+  return (
+    <div className="min-h-screen" style={{ background: theme.bg }}>
+      {/* CABEÇALHO COM DEGRADÊ */}
+      <header className="relative overflow-hidden">
+        <div className="absolute inset-0" style={{ background: `linear-gradient(90deg, ${theme.soft1} 0%, ${theme.soft2} 50%, ${theme.primary} 100%)` }} />
+        <div className="relative px-6 md:px-12 py-8 md:py-10 text-white">
+          <div className="max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-6 items-center">
+            {/* Logo + Título */}
+            <div className="flex items-center justify-center md:justify-start gap-3">
+              <div className="w-16 h-16 rounded-2xl flex items-center justify-center bg-white/10 border border-white/30 overflow-hidden">
+                <img src={logoData} alt="Logo Walisom Álvaro" className="w-full h-full object-contain" />
+              </div>
+              <div>
+                <h1 className="text-2xl md:text-3xl font-bold leading-tight">Prontuário SUAS</h1>
+                <p className="text-sm md:text-base opacity-90">CRAS Arara/PB · Registro e acompanhamento familiar</p>
+              </div>
+            </div>
+
+            {/* Informações institucionais */}
+            <div className="text-center">
+              <p className="text-sm opacity-90">Responsável técnico</p>
+              <p className="font-semibold">Walisom Álvaro</p>
+              <p className="text-sm">Psicólogo · CRP 13/12242</p>
+              <p className="text-xs opacity-80">Doutor em TCC · Especialista em Psicologia Social</p>
+            </div>
+
+            {/* Controles */}
+            <div className="flex flex-col items-center md:items-end gap-2">
+              <div className="flex flex-wrap gap-2">
+                <PillButton variant="outline">
+                  <label className="cursor-pointer">Importar JSON
+                    <input type="file" accept="application/json" className="hidden" onChange={(e) => e.target.files && importJSON(e.target.files[0])} />
+                  </label>
+                </PillButton>
+                <PillButton onClick={exportCSV}>Exportar CSV</PillButton>
+                <PillButton onClick={exportJSON} variant="outline">Exportar JSON</PillButton>
+                <PillButton onClick={() => window.print()}>Imprimir</PillButton>
+                <PillButton variant="outline" onClick={() => setCfgOpen(true)}>Configurações</PillButton>
+              </div>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      {/* MODAL DE CONFIGURAÇÕES (Upload da Logo em Base64) */}
+      <Modal open={cfgOpen} onClose={() => setCfgOpen(false)} title="Configurações da ferramenta">
+        <div className="space-y-4">
+          <div>
+            <div className="font-medium mb-1">Logo (Base64)</div>
+            <div className="flex items-center gap-3">
+              <img src={logoData} alt="Logo atual" className="w-12 h-12 rounded-lg border border-black/10 object-contain" />
+              <label className="px-3 py-2 rounded-xl bg-[var(--primary)] text-white text-sm cursor-pointer">
+                Carregar imagem (PNG/SVG)
+                <input type="file" accept="image/*" className="hidden" onChange={(e) => e.target.files && handleLogoUpload(e.target.files[0])} />
+              </label>
+              <button onClick={resetLogo} className="text-sm underline">Restaurar padrão</button>
+            </div>
+            <p className="text-xs text-black/60 mt-1">A imagem é convertida automaticamente para **Base64** e salva localmente (localStorage).</p>
+          </div>
+        </div>
+      </Modal>
+
+      {/* CONTEÚDO */}
+      <main className="px-6 md:px-12 py-8">
+        <div className="max-w-7xl mx-auto grid grid-cols-1 xl:grid-cols-5 gap-6">
+          {/* LISTA FAMÍLIAS */}
+          <div className="xl:col-span-2">
+            <Section title="Famílias / Usuários" right={<PillButton onClick={newFamily}>+ Nova família</PillButton>}>
+              <div className="mb-3">
+                <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar por nome" className="w-full rounded-xl border border-black/10 px-3 py-2" />
+              </div>
+              <ul className="divide-y divide-black/5 max-h-[60vh] overflow-auto">
+                {filtered.map((f) => (
+                  <li key={f.id} className={`py-3 flex items-start justify-between cursor-pointer ${selectedId === f.id ? "bg-white/70" : ""}`} onClick={() => setSelectedId(f.id)}>
+                    <div>
+                      <div className="font-medium text-[var(--textDark)]">{f.nomeReferencia || <em className="text-black/50">(sem nome)</em>}</div>
+                      <div className="text-xs text-black/60">Pront. {f.prontuarioN || "—"} · NIS {f.nisReferencia || "—"}</div>
+                      <div className="mt-1 flex flex-wrap">{(f.demandas || "").split(/[,;]+/).slice(0,3).filter(Boolean).map((d, i) => (<Badge key={i}>{d.trim()}</Badge>))}</div>
+                    </div>
+                    <button onClick={(e) => { e.stopPropagation(); if (confirm("Remover este prontuário?")) removeFamily(f.id); }} className="text-xs text-red-600">Excluir</button>
+                  </li>
+                ))}
+              </ul>
+            </Section>
+          </div>
+
+          {/* DETALHES */}
+          <div className="xl:col-span-2">
+            {!selected ? (
+              <Section title="Detalhes do prontuário"><p className="text-black/70 text-sm">Selecione uma família na lista ou crie um novo prontuário.</p></Section>
+            ) : (
+              <FamilyDetail family={selected} onUpdate={updateFamily} />
+            )}
+          </div>
+
+          {/* REFERÊNCIAS FIXAS NA LATERAL DIREITA */}
+          <aside className="xl:col-span-1">
+            <Section title="Base normativa & referências">
+              <ul className="space-y-2 text-sm">
+                {NORMATIVE_KB.map((n) => (
+                  <li key={n.id}>
+                    <div className="font-semibold">{n.title}</div>
+                    <div className="text-black/70">Palavras‑chave: {n.keywords.join(", ")}</div>
+                    <div className="flex flex-wrap gap-2 mt-1">
+                      {n.sources.map((s, i) => (<a key={i} target="_blank" rel="noreferrer" href={s.url} className="underline text-[var(--primary)]">{s.label}</a>))}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </Section>
+          </aside>
+        </div>
+      </main>
+
+      <style>{`
+        :root { --primary: ${theme.primary}; --textDark: ${theme.textDark}; --textLight: ${theme.textLight}; }
+        @media print { header, .no-print { display:none !important; } main { padding:0 !important; } .print-page-break { page-break-after: always; } }
+      `}</style>
+    </div>
+  );
+}
+
+function FamilyDetail({ family, onUpdate }) {
+  const [tab, setTab] = useState("cadastro");
+
+  const recommendations = useMemo(() => {
+    const text = `${family.demandas} ${family.resumoCaso} ${family.visitas.map(v => `${v.objetivo} ${v.observacoes}`).join(" ")}`.toLowerCase();
+    return NORMATIVE_KB.filter((n) => n.keywords.some((k) => text.includes(k.toLowerCase())));
+  }, [family]);
+
+  const lgpdAlerts = useMemo(() => {
+    const chunks = [family.resumoCaso, family.demandas, family.visitas.map(v => v.observacoes).join(" ")].join(" ");
+    const findings = [];
+    SENSITIVE_PATTERNS.forEach((p) => { const matches = chunks.match(p.regex); if (matches?.length) findings.push({ id: p.id, label: p.label, count: matches.length }); });
+    return findings;
+  }, [family]);
+
+  function addMember() { onUpdate({ membros: [...family.membros, { id: crypto.randomUUID(), nome: "", parentesco: "", idade: "", nis: "", escolaridade: "", renda: "" }] }); }
+  function updateMember(id, patch) { onUpdate({ membros: family.membros.map((m) => m.id === id ? { ...m, ...patch } : m) }); }
+  function removeMember(id) { onUpdate({ membros: family.membros.filter((m) => m.id !== id) }); }
+
+  function addTimeline() { onUpdate({ timeline: [{ id: crypto.randomUUID(), tipo: "Acompanhamento", dataISO: new Date().toISOString(), titulo: "Registro", descricao: "" }, ...family.timeline] }); }
+  function updateTimeline(id, patch) { onUpdate({ timeline: family.timeline.map((t) => t.id === id ? { ...t, ...patch } : t) }); }
+
+  function addVisita() { onUpdate({ visitas: [{ id: crypto.randomUUID(), dataISO: new Date().toISOString(), objetivo: "", observacoes: "" }, ...family.visitas] }); }
+  function updateVisita(id, patch) { onUpdate({ visitas: family.visitas.map((v) => v.id === id ? { ...v, ...patch } : v) }); }
+
+  return (
+    <div>
+      <Section
+        title={`Prontuário – ${family.nomeReferencia || "(sem nome)"}`}
+        right={
+          <div className="no-print">
+            {[
+              { id: "cadastro", label: "Cadastro" },
+              { id: "timeline", label: "Linha do tempo" },
+              { id: "visitas", label: "Visitas" },
+              { id: "resumo", label: "Resumo" },
+              { id: "regras", label: "Recomendações" },
+            ].map((t) => (
+              <button key={t.id} onClick={() => setTab(t.id)} className={`px-3 py-2 rounded-xl text-sm border ml-2 ${tab === t.id ? "bg-[var(--primary)] text-white border-transparent" : "bg-white border-black/10"}`}>{t.label}</button>
+            ))}
+          </div>
+        }
+      >
+        {lgpdAlerts.length > 0 && (
+          <div className="mb-4 p-3 rounded-xl bg-yellow-50 border border-yellow-200 text-yellow-900">
+            <div className="font-semibold mb-1">Alerta de LGPD/Ética</div>
+            <div className="text-sm">Foram detectados dados sensíveis. Revise a necessidade, obtenha consentimento e minimize a exposição.</div>
+            <div className="mt-1 flex flex-wrap gap-2">{lgpdAlerts.map((a) => (<Badge key={a.id}>{a.label}: {a.count}</Badge>))}</div>
+          </div>
+        )}
+
+        {tab === "cadastro" && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <TextInput label="Nome de referência (família/usuário)" value={family.nomeReferencia} onChange={(v) => onUpdate({ nomeReferencia: v })} />
+            <TextInput label="Nº do prontuário" value={family.prontuarioN} onChange={(v) => onUpdate({ prontuarioN: v })} />
+            <TextInput label="NIS do responsável" value={family.nisReferencia} onChange={(v) => onUpdate({ nisReferencia: v })} />
+            <TextInput label="Telefone" value={family.telefone} onChange={(v) => onUpdate({ telefone: v })} />
+            <TextInput label="Endereço" value={family.endereco} onChange={(v) => onUpdate({ endereco: v })} />
+            <TextInput label="Bairro" value={family.bairro} onChange={(v) => onUpdate({ bairro: v })} />
+            <TextInput label="Município" value={family.municipio} onChange={(v) => onUpdate({ municipio: v })} />
+            <TextInput label="Renda familiar (R$)" value={family.rendaFamiliar} onChange={(v) => onUpdate({ rendaFamiliar: v })} />
+            <div className="md:col-span-2"><TextArea label="Demandas (separe por vírgula)" value={family.demandas} onChange={(v) => onUpdate({ demandas: v })} placeholder="ex.: insegurança alimentar, violência doméstica, deficiência, desemprego…" /></div>
+            <div className="md:col-span-2"><TextArea label="Resumo do caso (sintético)" value={family.resumoCaso} onChange={(v) => onUpdate({ resumoCaso: v })} /></div>
+
+            {/* Membros */}
+            <div className="md:col-span-2">
+              <div className="flex items-center justify-between mb-2">
+                <div className="font-semibold">Composição familiar</div>
+                <PillButton onClick={addMember}>+ Adicionar membro</PillButton>
+              </div>
+              {family.membros.length === 0 && (<div className="text-sm text-black/60">Sem membros cadastrados.</div>)}
+              <div className="space-y-2">
+                {family.membros.map((m) => (
+                  <div key={m.id} className="grid grid-cols-1 md:grid-cols-6 gap-2 items-end bg-white p-3 rounded-xl border border-black/10">
+                    <TextInput label="Nome" value={m.nome} onChange={(v) => updateMember(m.id, { nome: v })} />
+                    <TextInput label="Parentesco" value={m.parentesco} onChange={(v) => updateMember(m.id, { parentesco: v })} />
+                    <TextInput label="Idade" value={m.idade} onChange={(v) => updateMember(m.id, { idade: v })} />
+                    <TextInput label="NIS" value={m.nis} onChange={(v) => updateMember(m.id, { nis: v })} />
+                    <TextInput label="Escolaridade" value={m.escolaridade} onChange={(v) => updateMember(m.id, { escolaridade: v })} />
+                    <div className="flex gap-2 items-end">
+                      <TextInput label="Renda (R$)" value={m.renda} onChange={(v) => updateMember(m.id, { renda: v })} />
+                      <button className="text-xs text-red-600" onClick={() => removeMember(m.id)}>Remover</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {tab === "timeline" && (
+          <div>
+            <div className="flex justify-between items-center mb-2">
+              <div className="font-semibold">Linha do tempo</div>
+              <PillButton onClick={addTimeline}>+ Registrar evento</PillButton>
+            </div>
+            {family.timeline.length === 0 && <div className="text-sm text-black/60">Sem registros na linha do tempo.</div>}
+            <ul className="space-y-3">
+              {family.timeline.map((t) => (
+                <li key={t.id} className="p-3 rounded-xl border border-black/10 bg-white">
+                  <div className="flex flex-wrap gap-2 items-center justify-between">
+                    <div className="font-medium">{t.titulo || "Registro"}</div>
+                    <div className="text-xs text-black/60">{new Date(t.dataISO).toLocaleString()}</div>
+                  </div>
+                  <div className="text-xs text-black/70">{t.tipo}</div>
+                  <TextArea label="Descrição" value={t.descricao} onChange={(v) => updateTimeline(t.id, { descricao: v })} />
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {tab === "visitas" && (
+          <div>
+            <div className="flex justify-between items-center mb-2">
+              <div className="font-semibold">Visitas domiciliares / atendimentos</div>
+              <PillButton onClick={addVisita}>+ Nova visita</PillButton>
+            </div>
+            {family.visitas.length === 0 && <div className="text-sm text-black/60">Sem visitas registradas.</div>}
+            <ul className="space-y-3">
+              {family.visitas.map((v) => (
+                <li key={v.id} className="p-3 rounded-xl border border-black/10 bg-white">
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm font-medium">{new Date(v.dataISO).toLocaleString()}</div>
+                  </div>
+                  <TextInput label="Objetivo" value={v.objetivo} onChange={(val) => updateVisita(v.id, { objetivo: val })} />
+                  <TextArea label="Observações (evitar dados excessivamente sensíveis)" value={v.observacoes} onChange={(val) => updateVisita(v.id, { observacoes: val })} />
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {tab === "resumo" && (
+          <div className="space-y-3">
+            <div className="p-3 rounded-xl bg-white border border-black/10">
+              <div className="font-semibold mb-1">Resumo do caso</div>
+              <div className="text-sm whitespace-pre-wrap">{family.resumoCaso || "(sem resumo)"}</div>
+            </div>
+            <div className="p-3 rounded-xl bg-white border border-black/10">
+              <div className="font-semibold mb-1">Demandas indicadas</div>
+              <div className="flex flex-wrap">{(family.demandas || "").split(/[,;]+/).filter(Boolean).map((d, i) => <Badge key={i}>{d.trim()}</Badge>)}</div>
+            </div>
+            <div className="text-xs text-black/60 print-page-break">Criado em {new Date(family.createdAt).toLocaleString()} · Atualizado em {new Date(family.updatedAt).toLocaleString()}</div>
+          </div>
+        )}
+
+        {tab === "regras" && (
+          <div>
+            {recommendations.length === 0 && (<div className="text-sm text-black/60">Sem recomendações automáticas no momento. Preencha “Demandas”, “Resumo” e “Visitas”.</div>)}
+            <ul className="space-y-3">
+              {recommendations.map((r) => (
+                <li key={r.id} className="p-4 rounded-2xl border border-black/10 bg-white">
+                  <div className="flex items-center justify-between">
+                    <div className="font-semibold">{r.title}</div>
+                    <div className="text-xs text-black/60">Detectado por palavras‑chave</div>
+                  </div>
+                  <div className="text-sm text-black/80 mt-1">{r.summary}</div>
+                  <div className="mt-2 flex gap-2 flex-wrap">{r.sources.map((s, i) => (<a key={i} href={s.url} target="_blank" rel="noreferrer" className="text-sm underline text-[var(--primary)]">Fontes: {s.label}</a>))}</div>
+                  <div className="mt-2 text-xs text-black/60">*Recomendações de apoio. A análise técnica segue o PAIF, o Código de Ética/CFP e a legislação vigente.</div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </Section>
+    </div>
+  );
+}
